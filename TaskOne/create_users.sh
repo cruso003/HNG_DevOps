@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# Ensure the script is run as root
+# Check if the script is run as root
 if [[ $EUID -ne 0 ]]; then
-   echo "This script must be run as root" 
-   exit 1
+    echo "This script must be run as root. Re-running with sudo..."
+    exec sudo "$0" "$@"
 fi
 
 # Check if the input file is provided
