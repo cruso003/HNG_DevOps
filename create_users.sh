@@ -1,112 +1,63 @@
 #!/bin/bash
 
 # Check if the input file is provided
-if [ $# -eq 0 ]; then
-    echo "Usage: bash $0 <name-of-text-file>"
+if [ -z "$1" ]; then
+    echo "Usage: $0 <name-of-text-file>"
     exit 1
 fi
 
-INPUT_FILE=$1
-LOG_FILE="/var/log/user_management.log"
-SECURE_DIR="/var/secure"
-PASSWORD_FILE="$SECURE_DIR/user_passwords.csv"
+input_file="$1"
+log_file="/var/log/user_management.log"
+password_file="/var/secure/user_passwords.csv"
 
-# Check if input file exists
-if [ ! -f "$INPUT_FILE" ]; then
-    echo "Input file $INPUT_FILE does not exist."
-    exit 1
-fi
+# Ensure log and password directories exist and are secure
+mkdir -p /var/log /var/secure
+touch "$log_file" "$password_file"
+chmod 600 "$password_file"
 
-# Function to log actions
-log_action() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | sudo tee -a $LOG_FILE > /dev/null
+# Function to generate random password
+generate_password() {
+    tr -dc 'A-Za-z0-9' </dev/urandom | head -c 12
 }
 
-# Ensure the log file and secure directory exist with correct permissions
-echo "Creating log file and secure directory..."
-sudo mkdir -p $SECURE_DIR
-sudo touch $LOG_FILE $PASSWORD_FILE
-sudo chmod 644 $LOG_FILE
-sudo chmod 600 $PASSWORD_FILE
+# Read input file line by line
+while IFS=';' read -r username groups || [ -n "$username" ]; do
+    username=$(echo "$username" | xargs)
+    groups=$(echo "$groups" | xargs)
 
-# Function to create a user and its groups
-create_user() {
-    USERNAME=$1
-    IFS=',' read -ra GROUPS <<< "$2"
-
-    log_action "Processing user: $USERNAME"
-
-    # Create user with a home directory
-    if id -u $USERNAME >/dev/null 2>&1; then
-        log_action "User $USERNAME already exists."
+    # Create personal group if it doesn't exist
+    if ! getent group "$username" >/dev/null; then
+        groupadd "$username"
+        echo "$(date): Group $username created" >> "$log_file"
     else
-        if sudo useradd -m $USERNAME; then
-            log_action "Created user $USERNAME."
-        else
-            log_action "Failed to create user $USERNAME."
-            return
-        fi
+        echo "$(date): Group $username already exists" >> "$log_file"
     fi
 
-    # Create personal group
-    if ! sudo getent group $USERNAME >/dev/null 2>&1; then
-        if sudo groupadd $USERNAME; then
-            log_action "Created personal group $USERNAME."
-        else
-            log_action "Failed to create personal group $USERNAME."
-            return
-        fi
-    fi
-
-    if sudo usermod -aG $USERNAME $USERNAME; then
-        log_action "Added user $USERNAME to their personal group."
+    # Create user if it doesn't exist
+    if ! id "$username" >/dev/null 2>&1; then
+        useradd -m -g "$username" "$username"
+        echo "$(date): User $username created" >> "$log_file"
     else
-        log_action "Failed to add user $USERNAME to their personal group."
+        echo "$(date): User $username already exists" >> "$log_file"
     fi
 
     # Add user to additional groups
-    for GROUP in "${GROUPS[@]}"; do
-        GROUP=$(echo $GROUP | xargs)  # Remove leading/trailing whitespace
-        if ! sudo getent group $GROUP >/dev/null 2>&1; then
-            if sudo groupadd $GROUP; then
-                log_action "Created group $GROUP."
-            else
-                log_action "Failed to create group $GROUP."
-                continue
-            fi
+    IFS=',' read -ra group_array <<< "$groups"
+    for group in "${group_array[@]}"; do
+        group=$(echo "$group" | xargs)
+        if ! getent group "$group" >/dev/null; then
+            groupadd "$group"
+            echo "$(date): Group $group created" >> "$log_file"
         fi
-        if sudo usermod -aG $GROUP $USERNAME; then
-            log_action "Added user $USERNAME to group $GROUP."
-        else
-            log_action "Failed to add user $USERNAME to group $GROUP."
-        fi
+        usermod -aG "$group" "$username"
+        echo "$(date): User $username added to the group $group" >> "$log_file"
     done
 
-    # Set up home directory permissions
-    if sudo chown -R $USERNAME:$USERNAME /home/$USERNAME && sudo chmod 700 /home/$USERNAME; then
-        log_action "Set up home directory for $USERNAME with correct permissions."
-    else
-        log_action "Failed to set up home directory for $USERNAME."
-    fi
+    # Generate and store password
+    password=$(generate_password)
+    echo "$username,$password" >> "$password_file"
+    echo "$(date): Password for user $username generated and stored in" >> "$log_file"
 
-    # Generate a random password
-    PASSWORD=$(openssl rand -base64 12)
-    if echo "$USERNAME:$PASSWORD" | sudo chpasswd; then
-        log_action "Set password for user $USERNAME."
-    else
-        log_action "Failed to set password for user $USERNAME."
-    fi
+done < "$input_file"
 
-    # Store the password securely
-    echo "$USERNAME,$PASSWORD" | sudo tee -a $PASSWORD_FILE > /dev/null
-}
-
-# Read the input file line by line
-while IFS=';' read -r USERNAME GROUPS; do
-    USERNAME=$(echo $USERNAME | xargs)  # Remove leading/trailing whitespace
-    GROUPS=$(echo $GROUPS | xargs)  # Remove leading/trailing whitespace
-    create_user $USERNAME "$GROUPS"
-done < "$INPUT_FILE"
-
-log_action "User creation process completed."
-echo "User creation process completed."
+echo "User creation process completed successfully. Kindly Check $log_file for details."
